@@ -1,47 +1,98 @@
-const express = require("express");
+// ====== server.js (Jusssmile Signaling Server) ======
+const express = require('express');
+const http = require('http');
+const cors = require('cors');
+const socketIO = require('socket.io');
+
 const app = express();
-const http = require("http").Server(app);
-const io = require("socket.io")(http, {
-  cors: { origin: "*" }
+const server = http.createServer(app);
+const io = socketIO(server, {
+  cors: { origin: '*' }
 });
 
-let users = [];
+app.get('/', (req, res) => res.send("Your service is live 🎉"));
 
-io.on("connection", (socket) => {
-  console.log("A user connected:", socket.id);
+let waitingUsers = [];
 
-  users.push(socket.id);
-  if (users.length === 2) {
-    users.forEach(id => {
-      io.to(id).emit("ready");
+io.on('connection', (socket) => {
+  console.log('A user connected:', socket.id);
+
+  socket.on('join', (userData) => {
+    socket.userData = userData;
+    tryPairing(socket);
+  });
+
+  socket.on('signal', (data) => {
+    const target = io.sockets.sockets.get(data.to);
+    if (target) {
+      target.emit('signal', {
+        from: socket.id,
+        signal: data.signal
+      });
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+    removeFromQueue(socket);
+    if (socket.partner) {
+      const partner = io.sockets.sockets.get(socket.partner);
+      if (partner) {
+        partner.emit('partner-left');
+        partner.partner = null;
+      }
+    }
+  });
+
+  socket.on('next', () => {
+    if (socket.partner) {
+      const partner = io.sockets.sockets.get(socket.partner);
+      if (partner) {
+        partner.emit('partner-left');
+        partner.partner = null;
+      }
+      socket.partner = null;
+    }
+    tryPairing(socket);
+  });
+});
+
+function tryPairing(socket) {
+  if (waitingUsers.length > 0) {
+    const partner = waitingUsers.shift();
+
+    if (partner.id === socket.id) {
+      waitingUsers.push(socket);
+      return;
+    }
+
+    socket.partner = partner.id;
+    partner.partner = socket.id;
+
+    socket.emit('partner-found', {
+      id: partner.id,
+      type: partner.userData?.type || 'Stranger',
+      gender: partner.userData?.gender || 'Unknown',
+      location: partner.userData?.location || 'Unknown'
     });
+
+    partner.emit('partner-found', {
+      id: socket.id,
+      type: socket.userData?.type || 'Stranger',
+      gender: socket.userData?.gender || 'Unknown',
+      location: socket.userData?.location || 'Unknown'
+    });
+
+  } else {
+    waitingUsers.push(socket);
   }
+}
 
-  socket.on("offer", (data) => {
-    socket.broadcast.emit("offer", data);
-  });
+function removeFromQueue(socket) {
+  waitingUsers = waitingUsers.filter(s => s.id !== socket.id);
+}
 
-  socket.on("answer", (data) => {
-    socket.broadcast.emit("answer", data);
-  });
-
-  socket.on("candidate", (data) => {
-    socket.broadcast.emit("candidate", data);
-  });
-
-  socket.on("leave", () => {
-    users = users.filter(id => id !== socket.id);
-    socket.broadcast.emit("leave");
-  });
-
-  socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
-    users = users.filter(id => id !== socket.id);
-    socket.broadcast.emit("leave");
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+  console.log(`✅ Jusssmile signaling server running on port ${PORT}`);
 });
